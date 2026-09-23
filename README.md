@@ -1,0 +1,89 @@
+# Waterpoints Agent
+
+AI assistant for waterpoints information powered by the [Waterpoints](https://mcp.waterpointsmonitoring.net/) MCP server. 
+Provides a Gradio chat interface where technicians, agro-pastoralist, and researchers can query waterpoint data through natural language.
+
+## Requirements
+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) (package manager)
+- Python 3.10
+- An LLM backend accessible via [LiteLLM](https://docs.litellm.ai/) (default: Ollama with `llama3.1:8b`)
+
+## Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/CIAT-DAPA/lswms_agent.git
+cd lswms_agent
+
+# Install dependencies
+uv sync
+```
+
+## Configuration
+
+The agent is configured via environment variables. Create a `.env` file or export them in your shell:
+
+| Variable | Default | Description |
+|---|---|---|
+| `WATERPOINTS_MCP_URL` | `https://mcp.waterpointsmonitoring.net/mcp` | AClimate MCP server URL |
+| `WATERPOINTS_AGENT_MODEL` | `ollama/llama3.1:8b` | LiteLLM model identifier |
+| `WATERPOINTS_AGENT_API_BASE` | `http://localhost:11434` | LLM API base URL (e.g. your Ollama instance) |
+
+Example using a different Ollama host:
+
+```bash
+export WATERPOINTS_AGENT_MODEL="ollama/llama3.1:8b"
+export WATERPOINTS_AGENT_API_BASE="http://localhost:11434"
+```
+
+## Running the app
+
+```bash
+# Linux
+uv run src/app.py
+
+# Windows
+uv run src\app.py
+```
+
+The Gradio interface will be available at `http://localhost:7860`.
+
+## Running the tests
+
+Both test scripts are standalone (no pytest required) and are run directly with `uv run`.
+
+**Test 1 — MCP connection:** verifies connectivity to the AClimate MCP server and lists available tools.
+
+```bash
+# Linux
+uv run tests/test_mcp_connection.py
+
+# Windows
+uv run tests\test_mcp_connection.py
+```
+
+**Test 2 — Agent integration:** sends a sample query through the full agent loop and prints the response.
+
+```bash
+# Linux
+uv run tests/test_agent.py
+
+# Windows
+uv run tests\test_agent.py
+```
+
+## Project structure
+
+```
+lswms_agent/
+├── src/
+│   ├── app.py              # Gradio chat interface (entry point)
+│   └── waterpoints_agent.py   # Waterpoint class
+├── tests/
+│   ├── test_agent.py       # End-to-end agent test
+│   └── test_mcp_connection.py  # MCP connectivity test
+├── pyproject.toml
+├── .python-version         # Python 3.10
+└── uv.lock
+```
