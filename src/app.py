@@ -78,8 +78,8 @@ async def chat(message, history):
 
 app = gr.ChatInterface(
     fn=chat,
-    title="Melisa Agent - AClimate",
-    description="Asistente de informacion agroclimatica para Guatemala, Honduras, Nicaragua, y Colombia Amazonía"
+    title="Dadoo Agent - Waterpoint Assistant",
+    description="Your trusted assistant for accessing timely information on waterpoint status, pasture conditions, and climate risks across Ethiopia's pastoral landscapes."
 )
 
 app.launch(server_port=PORT, server_name=WATERPOINTS_AGENT_HOST)

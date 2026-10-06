@@ -84,10 +84,12 @@ This may include, depending on the tools available:
 * Waterpoint status or condition.
 * Historical waterpoint observations.
 * Water availability information.
-* Climate information associated with waterpoints.
-* Pasture or forage information.
+* Waterpoint profiles 
+* Historical climate information associated with waterpoints.
+* Pasture or forage information on wereda(district) level.
 * Monitoring information.
-* Forecast information.
+* Seasonal climate forecast information associated with waterpoints.
+* Sub-Seasonal climate forecast information associated with waterpoints.
 * Comparisons between waterpoints, locations, periods, or indicators.
 * Summaries and interpretations derived directly from tool results.
 
@@ -184,13 +186,13 @@ User provides:
 
 "Mille"
 
-But the data tool requires a waterpoint ID.
+But the available tools requires a waterpoint ID.
 
 Then:
 
-1. Find the relevant waterpoint or location using an available search/discovery tool.
+1. Find the relevant waterpoint or location using `get_waterpoints_by_name`.
 2. Obtain the required identifier from the tool result.
-3. Use that identifier in the appropriate data tool.
+3. Use that identifier in the appropriate data tool to search for waterpoint information, status, seasonal forecast, waterpoint profiles, waterpoints daily or climatologicaldata.
 
 Never invent IDs.
 
@@ -216,6 +218,7 @@ If the user requests a specific period:
 
 * Convert it to the format required by the tool.
 * Keep the requested temporal boundaries whenever possible.
+* For climatological raw data of the waterpoint, each extraction period should be limited to a maximum of three years and remain within a continuous three-year boundary.
 
 If the requested period is outside the available data range:
 
@@ -245,6 +248,8 @@ After every tool call:
 3. Confirm that it corresponds to the requested variable.
 4. Confirm that it corresponds to the requested period.
 5. Determine whether additional tool calls are necessary.
+6. Always check the reminder and hint from the response.
+7. If the result is empty, clearly inform the user and ask whether they want to try a different waterpoint, location, period, or variable.
 
 Do not treat an empty response as zero.
 
@@ -328,7 +333,7 @@ For example, if the user asks:
 
 Prefer:
 
-"The latest available observation for waterpoint X, dated 15 June 2026, reports its condition as Functional."
+"The latest available observation for waterpoint X, dated 15 June 2026, reports its condition either GOOD , WATCH, ALERT , NEAR-DRY  or SEASONALLY-DRY
 
 Instead of:
 
@@ -384,9 +389,11 @@ You must never:
 * Invent waterpoint names.
 * Invent waterpoint IDs.
 * Invent locations or coordinates.
+* Invent woredas or districts.
+* Invent zones.
 * Invent dates.
 * Invent measurements.
-* Invent statuses.
+* Invent status.
 * Invent forecasts.
 * Invent tool names.
 * Invent tool parameters.
@@ -420,7 +427,7 @@ Once the user's question has been completely answered, return the final response
 
 
 class WaterpointsAgent:
-    """LLM agent that consumes tools exposed by the AClimate MCP server."""
+    """LLM agent that consumes tools exposed by the waterpoints MCP server."""
 
     def __init__(
         self,
@@ -449,7 +456,7 @@ class WaterpointsAgent:
         tools_description = "\n".join(
             (
                 f"- {tool['function']['name']}: "
-                f"{tool['function'].get('description', 'Sin descripcion')}"
+                f"{tool['function'].get('description', 'No description available.')}"
             )
             for tool in tools
         )
@@ -467,7 +474,7 @@ class WaterpointsAgent:
 
 
     async def chat(self, user_message: str) -> str:
-        """Process a user message through the LLM and AClimate MCP tools."""
+        """Process a user message through the LLM and waterpoints MCP tools."""
 
         if not user_message.strip():
             return "Please provide a non-empty message to process."
@@ -507,10 +514,10 @@ class WaterpointsAgent:
         system_prompt: dict[str, str],
     ) -> str:
 
-        # (tool + argumentos) -> resultado ya obtenido en esta conversacion
+        # (tool + argumentos) -> result already obtained in this conversation
         executed_calls: dict[str, dict[str, Any]] = {}
 
-        # iteraciones consecutivas sin ninguna llamada nueva
+        # consecutive iterations without any new call
         stalled_iterations = 0
 
         for iteration in range(1, self.max_iterations + 1):

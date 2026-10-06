@@ -26,7 +26,7 @@ The agent is configured via environment variables. Create a `.env` file or expor
 
 | Variable | Default | Description |
 |---|---|---|
-| `WATERPOINTS_MCP_URL` | `https://mcp.waterpointsmonitoring.net/mcp` | AClimate MCP server URL |
+| `WATERPOINTS_MCP_URL` | `https://mcp.waterpointsmonitoring.net/mcp` | waterpoint MCP server URL |
 | `WATERPOINTS_AGENT_MODEL` | `ollama/llama3.1:8b` | LiteLLM model identifier |
 | `WATERPOINTS_AGENT_API_BASE` | `http://localhost:11434` | LLM API base URL (e.g. your Ollama instance) |
 
