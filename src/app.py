@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from waterpoints_agent import WaterpointsAgent
 
 load_dotenv()
-WATERPOINTS_MCP_URL = os.getenv("WATERPOINTS_MCP_URL", "https://mcp.waterpointsmonitoring.net/mcp")
+# WATERPOINTS_MCP_URL = os.getenv("WATERPOINTS_MCP_URL", "https://mcp.waterpointsmonitoring.net/mcp")
 WATERPOINTS_AGENT_MODEL = os.getenv("WATERPOINTS_AGENT_MODEL", "ollama_chat/llama3.1:8b")
 WATERPOINTS_AGENT_API_BASE = os.getenv("WATERPOINTS_AGENT_API_BASE", "http://localhost:11434")
 PORT = int(os.getenv("WATERPOINTS_AGENT_PORT", 7860))
@@ -67,7 +67,7 @@ async def chat(message, history):
     # Un agente nuevo por llamada: sin estado compartido entre usuarios.
     # La sesion vive en el history que Gradio mantiene por navegador.
     agent = WaterpointsAgent(
-        mcp_url=WATERPOINTS_MCP_URL,
+        # mcp_url=WATERPOINTS_MCP_URL,
         model=WATERPOINTS_AGENT_MODEL,
         api_base=WATERPOINTS_AGENT_API_BASE,
     )

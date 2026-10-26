@@ -105,6 +105,13 @@ If the user asks about something that cannot be answered with the available Wate
 * Mention relevant types of questions you can answer based on the available tools.
 * When useful, provide one example of a valid question.
 
+CRITICAL INSTRUCTIONS FOR TOOL USAGE:
+**Avoid Repetition**: Do not repeat the exact same tool call with identical arguments if you have already received its output. Use the data you already retrieved in your memory to answer the user.
+**Prefer minimal tools**: For simple questions (status, location, latest condition, profile), use at most 1–2 tools, then answer immediately. Do not chain extra tools once you have the data needed to answer.
+If the user asks for current status, condition, or latest observation of a waterpoint,
+you MUST call the status tool for that waterpoint in this turn.
+Do not answer status from profile text or from earlier tool results alone.
+
 For greetings, thanks, or farewells, respond naturally and briefly without calling tools.
 
 For borderline questions related to water, livestock, pastoralism, climate, agriculture, drought, or similar topics, 
@@ -192,8 +199,8 @@ Then:
 
 1. Find the relevant waterpoint or location using `get_waterpoints_by_name`.
 2. Obtain the required identifier from the tool result.
-3. Use that identifier in the appropriate data tool to search for waterpoint information, status, seasonal forecast, waterpoint profiles, waterpoints daily or climatologicaldata.
-
+3. Use that identifier in the appropriate data tool to search for waterpoint information, waterpoint status, seasonal forecast, waterpoint profiles, waterpoint daily or waterpoint climatological data.
+4. Do not repeat the exact same tool call with identical arguments if it has already been executed.
 Never invent IDs.
 
 ## Ambiguous results
@@ -250,6 +257,7 @@ After every tool call:
 5. Determine whether additional tool calls are necessary.
 6. Always check the reminder and hint from the response.
 7. If the result is empty, clearly inform the user and ask whether they want to try a different waterpoint, location, period, or variable.
+
 
 Do not treat an empty response as zero.
 
@@ -327,13 +335,17 @@ Always answer the user's actual question.
 
 Do not merely report that data was found.
 
+Determine whether the user's message depends on prior context.If it is self-contained, answer it directly. 
+
+
 For example, if the user asks:
 
 "What is the current condition of waterpoint X?"
 
 Prefer:
 
-"The latest available observation for waterpoint X, dated 15 June 2026, reports its condition either GOOD , WATCH, ALERT , NEAR-DRY  or SEASONALLY-DRY
+"The latest available observation for <waterpoint name>, dated <YYYY-MM-DD from the tool>,
+reports its condition as <status value from the tool>.
 
 Instead of:
 
@@ -425,6 +437,9 @@ If any factual statement cannot be traced to a tool result, remove it.
 
 Once the user's question has been completely answered, return the final response in normal text and make no additional tool calls."""
 
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
 
 class WaterpointsAgent:
     """LLM agent that consumes tools exposed by the waterpoints MCP server."""
@@ -433,14 +448,26 @@ class WaterpointsAgent:
         self,
         *,
         mcp_url: str = "https://mcp.waterpointsmonitoring.net/mcp",
-        model: str = "ollama_chat/llama3.1:8b",
+        # server_command: str = "uv",
+        # server_args: list[str] | None = None,
+        model: str = "llama3.1:8b",
         api_base: str = "http://localhost:11434",
         max_iterations: int = 15,
         max_tokens: int = 1024,
         temperature: float = 0.1,
         num_ctx: int = 8192,
     ) -> None:
+        #local setting 
+        # if server_args is None:
+        #     server_args = [
+        #         "run",
+        #         "--directory",
+        #         r"",
+        #         "server.py",
+        #     ]
         self.mcp_url = mcp_url
+        # self.server_command = server_command
+        # self.server_args = server_args
         self.model = model
         self.api_base = api_base
         self.max_iterations = max_iterations
@@ -449,7 +476,6 @@ class WaterpointsAgent:
         self.num_ctx = num_ctx
 
         self.memory: list[dict[str, Any]] = []
-
 
     @staticmethod
     def build_system_prompt(tools: list[dict[str, Any]]) -> dict[str, str]:
@@ -468,10 +494,8 @@ class WaterpointsAgent:
             ),
         }
 
-
     def reset_memory(self) -> None:
         self.memory.clear()
-
 
     async def chat(self, user_message: str) -> str:
         """Process a user message through the LLM and waterpoints MCP tools."""
@@ -486,8 +510,16 @@ class WaterpointsAgent:
             }
         )
 
+        # included for local run
+        server_params = StdioServerParameters(
+            command=self.server_command,
+            args=self.server_args,
+            env=None,
+        )
+
         # Keep the MCP context open for the complete tool-calling loop
-        async with streamablehttp_client(self.mcp_url) as (read, write, _):
+        # async with streamablehttp_client(self.mcp_url) as (read, write, _):
+        async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
@@ -496,7 +528,6 @@ class WaterpointsAgent:
                     session=session,
                     format="openai",
                 )
-                #print("Tools: %s", [tool["function"]["name"] for tool in tools])
                 logger.debug("Tools: %s", [tool["function"]["name"] for tool in tools])
                 system_prompt = self.build_system_prompt(tools)
 
@@ -506,7 +537,6 @@ class WaterpointsAgent:
                     system_prompt=system_prompt,
                 )
 
-
     async def _run_agent_loop(
         self,
         session: ClientSession,
@@ -514,56 +544,87 @@ class WaterpointsAgent:
         system_prompt: dict[str, str],
     ) -> str:
 
-        # (tool + argumentos) -> result already obtained in this conversation
+        # (tool + args) -> result already obtained in this conversation
         executed_calls: dict[str, dict[str, Any]] = {}
 
-        # consecutive iterations without any new call
+        # consecutive iterations without any NEW tool execution
         stalled_iterations = 0
+
+        # After a pure-repeat turn, force the model to answer (no tools)
+        force_final_answer = False
+
+        # How many times we got real new (non-empty, non-error) data
+        successful_rounds = 0
+        # Stop after 1–2 useful tools for simple questions
+        MAX_SUCCESSFUL_ROUNDS = 2
 
         for iteration in range(1, self.max_iterations + 1):
             logger.debug("Agent iteration %s", iteration)
             print(f"Agent iteration {iteration}")
-            print(f"Memory: {self.memory}")
 
-            response = await acompletion(
-                model=self.model,
-                api_base=self.api_base,
-                messages=[
+            completion_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "api_base": self.api_base,
+                "messages": [
                     system_prompt,
                     *self.memory,
                 ],
-                tools=tools,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                num_ctx=self.num_ctx,
-            )
+                "max_tokens": self.max_tokens,
+                "temperature": self.temperature,
+                "num_ctx": self.num_ctx,
+            }
+
+            if force_final_answer:
+                # Do not offer tools — model must produce a text answer
+                print("Forcing final answer (tool_choice=none)")
+                completion_kwargs["tools"] = []
+                completion_kwargs["tool_choice"] = "none"
+            else:
+                completion_kwargs["tools"] = tools
+
+            response = await acompletion(**completion_kwargs)
 
             message = response.choices[0].message
-            tool_calls = message.tool_calls or []
+            tool_calls = list(message.tool_calls or [])
 
-            # llama3.1 a veces emite la tool call como texto JSON en vez de
-            # usar el canal estructurado. Rescatarla antes de darla por respuesta.
-            if not tool_calls and message.content:
+            # llama3.1 sometimes emits tool calls as plain-text JSON
+            if not tool_calls and message.content and not force_final_answer:
                 rescued = self._extract_text_tool_calls(message.content)
-
                 if rescued:
                     logger.warning("Rescued %s tool call(s) emitted as plain text",len(rescued),)
-                    print(f"Rescued {len(rescued)} tool call(s) emitted as plain text")
+                    print(f"Rescued {len(rescued)} tool call(s) emitted as plain text" )
                     tool_calls = rescued
-                    # No guardar el JSON crudo como contenido: el modelo
-                    # tenderia a imitar ese formato en los turnos siguientes.
+                    # Avoid storing the raw JSON as content, as the model may
+                    # start reproducing that format in subsequent interactions.
                     message.content = None
 
-            if not tool_calls:
-                final_content = message.content or ("It was not possible to generate a response for the query.")
-
+            # If we forced a final answer, ignore any leftover tool calls
+            # and return text (or synthesize from memory).
+            if force_final_answer:
+                final_content = (message.content or "").strip()
+                if not final_content:
+                    final_content = self._synthesize_answer_from_memory()
                 self.memory.append(
                     {
                         "role": "assistant",
                         "content": final_content,
                     }
                 )
+                #reset successful rounds for subsquent request from user
+                successful_rounds = 0
+                return final_content
 
+            # No tool calls this is for normal final answer 
+            if not tool_calls:
+                final_content = message.content or ("It was not possible to generate a response for the query." )
+                self.memory.append(
+                    {
+                        "role": "assistant",
+                        "content": final_content,
+                    }
+                )
+                #reset successful rounds for subsquent request from user
+                successful_rounds = 0
                 return final_content
 
             self.memory.append(
@@ -571,106 +632,231 @@ class WaterpointsAgent:
                     "role": "assistant",
                     "content": message.content,
                     "tool_calls": [
-                        tool_call.model_dump()
-                        for tool_call in tool_calls
+                        tool_call.model_dump() for tool_call in tool_calls
                     ],
                 }
             )
 
             made_progress = False
-
             print(f"Tool calls detected: {len(tool_calls)}")
+
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
                 tool_arguments = self._parse_tool_arguments(
                     tool_call.function.arguments
                 )
-
                 call_key = self._build_call_key(tool_name, tool_arguments)
 
-                if call_key in executed_calls:
-                    logger.warning("Repeated call to %s with %s - serving cached result",tool_name,tool_arguments,)
-                    print(f"Repeated call to {tool_name} with {tool_arguments} - serving cached result")
+                is_repeat = call_key in executed_calls
 
-                    result = {
-                        "repeated_call": True,
-                        "note": (
-                            f"Ya llamaste '{tool_name}' con estos mismos argumentos "
-                            f"en esta conversacion. Abajo esta el resultado que ya "
-                            f"obtuviste; no se volvio a ejecutar la tool. Usa ese dato "
-                            f"para avanzar al siguiente paso del flujo, o cambia de "
-                            f"estrategia (otros argumentos u otra tool). No repitas "
-                            f"esta llamada."
-                        ),
-                        "previous_result": executed_calls[call_key],
-                    }
-
+                if is_repeat:
+                    logger.warning(
+                        "Repeated call to %s with %s - serving cached result",
+                        tool_name,
+                        tool_arguments,
+                    )
+                    print(
+                        f"Repeated call to {tool_name} with {tool_arguments} "
+                        "- serving cached result"
+                    )
+                    result = executed_calls[call_key]
                 else:
                     logger.info("Executing MCP tool %s with arguments %s",tool_name,tool_arguments,)
-                    print(f"Executing MCP tool {tool_name} with arguments {tool_arguments}")
-
+                    print(f"Executing MCP tool {tool_name} with arguments {tool_arguments}" )
                     result = await self._execute_tool(
                         session=session,
                         tool_name=tool_name,
                         tool_arguments=tool_arguments,
                     )
-
                     print(f"Result from {tool_name}: {result}")
-
                     executed_calls[call_key] = result
                     made_progress = True
+
+                    # Count only non-empty, non-error results as "useful"
+                    plain_preview = self._format_tool_result(result)
+                    if (
+                        not result.get("is_error")
+                        and plain_preview
+                        and not plain_preview.startswith("[EMPTY RESULT]")
+                    ):
+                        successful_rounds += 1
+
+                plain_text_content = self._format_tool_result(result)
+
+                if is_repeat:
+                    plain_text_content = (
+                        "[CACHED — this exact tool+arguments was already executed. "
+                        "Do NOT call it again. Use the data below to answer the user "
+                        "or choose different arguments / a different tool.]\n\n"
+                        + plain_text_content
+                    )
 
                 self.memory.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "name": tool_name,
-                        "content": json.dumps(
-                            result,
-                            ensure_ascii=False,
-                            default=str,
-                        ),
+                        "content": plain_text_content,
                     }
                 )
 
             if made_progress:
                 stalled_iterations = 0
 
+                # After 1–2 useful tools, force a final answer next turn
+                if successful_rounds >= MAX_SUCCESSFUL_ROUNDS:
+                    force_final_answer = True
+                    print(
+                        f"Reached {successful_rounds} successful tool rounds "
+                        f"— forcing final answer next iteration"
+                    )
+                    self.memory.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                "You already have enough tool results to answer. "
+                                "Do NOT call any more tools. Write a clear, concise "
+                                "final answer for the user based only on the data above."
+                            ),
+                        }
+                    )
+                else:
+                    force_final_answer = False
             else:
                 stalled_iterations += 1
+                logger.warning(
+                    "Iteration %s produced no new tool calls (stalled=%s)",
+                    iteration,
+                    stalled_iterations,
+                )
+                print(
+                    f"Iteration {iteration} produced no new tool calls "
+                    f"(stalled={stalled_iterations})"
+                )
 
-                logger.warning("Iteration %s produced no new tool calls (stalled=%s)",iteration,stalled_iterations,)
-                print(f"Iteration {iteration} produced no new tool calls (stalled={stalled_iterations})")
+                force_final_answer = True
+                self.memory.append(
+                    {
+                        "role": "system",
+                        "content": (
+                            "You already have all the tool results you need above. "
+                            "Do NOT call any tool. Write a clear final answer for the "
+                            "user based only on those tool outputs."
+                        ),
+                    }
+                )
 
-                if stalled_iterations >= 2:
+                if stalled_iterations >= 3:
                     stalled = (
-                        "No fue posible avanzar: el agente repitio las mismas consultas "
-                        "sin obtener informacion nueva. Por favor reformula la pregunta "
-                        "o especifica la ubicacion, la variable y el periodo."
+                        "Unable to proceed because the agent repeated the same queries "
+                        "without retrieving any new information. "
+                        "Please rephrase your question or provide the location, "
+                        "variable and time period."
                     )
-
                     self.memory.append(
                         {
                             "role": "assistant",
                             "content": stalled,
                         }
                     )
-
                     return stalled
 
         fallback = (
-            "It was not possible to complete the request within the maximum number of allowed iterations."
+            "It was not possible to complete the request within the maximum "
+            "number of allowed iterations."
         )
-
         self.memory.append(
             {
                 "role": "assistant",
                 "content": fallback,
             }
         )
-
         return fallback
 
+    def _synthesize_answer_from_memory(self) -> str:
+        """Build a last-resort answer from the latest tool results in memory."""
+        tool_chunks: list[str] = []
+        for msg in reversed(self.memory):
+            if msg.get("role") == "tool" and msg.get("content"):
+                content = str(msg["content"]).strip()
+                if content.startswith("[CACHED"):
+                    parts = content.split("\n\n", 1)
+                    content = parts[1] if len(parts) > 1 else content
+                if content and not content.startswith("[EMPTY RESULT]"):
+                    tool_chunks.append(content)
+                if len(tool_chunks) >= 3:
+                    break
+
+        if not tool_chunks:
+            return (
+                "The tools were called but no usable data was available to answer "
+                "your question. Please try a different waterpoint name, location, "
+                "or time period."
+            )
+
+        combined = "\n\n---\n\n".join(reversed(tool_chunks))
+        return (
+            "Based on the information retrieved from the monitoring tools:\n\n"
+            f"{combined}"
+        )
+
+    @staticmethod
+    def _format_tool_result(result: dict[str, Any]) -> str:
+        """Turn an MCP tool result dict into plain text for the LLM."""
+        if result.get("is_error"):
+            err = (
+                result.get("error")
+                or result.get("content")
+                or "Unknown tool error"
+            )
+            return f"[TOOL ERROR] {err}"
+
+        mcp_response_content = result.get("content", [])
+
+        if isinstance(mcp_response_content, list):
+            formatted_items = []
+            for item in mcp_response_content:
+                if isinstance(item, (dict, list)):
+                    formatted_items.append(
+                        json.dumps(
+                            item, ensure_ascii=False, indent=2, default=str
+                        )
+                    )
+                else:
+                    formatted_items.append(str(item))
+            plain_text = "\n".join(formatted_items)
+        elif isinstance(mcp_response_content, dict):
+            plain_text = json.dumps(
+                mcp_response_content,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        else:
+            plain_text = (
+                str(mcp_response_content)
+                if mcp_response_content is not None
+                else ""
+            )
+
+        # Prefer structured_content when text is empty
+        if not plain_text.strip() and "structured_content" in result:
+            plain_text = json.dumps(
+                result["structured_content"],
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+
+        if not plain_text.strip():
+            return (
+                "[EMPTY RESULT] The tool returned no data. "
+                "Do not treat this as a zero value. "
+                "Tell the user that no matching information was found, "
+                "or try different arguments / another tool."
+            )
+
+        return plain_text
 
     async def _execute_tool(
         self,
@@ -684,6 +870,7 @@ class WaterpointsAgent:
                 name=tool_name,
                 arguments=tool_arguments,
             )
+            print("MCP RESULT:", mcp_result)
 
             text_blocks = [
                 block.text
@@ -693,30 +880,24 @@ class WaterpointsAgent:
 
             result: dict[str, Any] = {
                 "content": text_blocks,
-                "is_error": bool(
-                    getattr(mcp_result,"isError",False,)
-                ),
+                "is_error": bool(getattr(mcp_result, "isError", False)),
             }
 
             structured_content = getattr(
-                mcp_result,
-                "structuredContent",
-                None,
+                mcp_result, "structuredContent", None
             )
-
             if structured_content is not None:
                 result["structured_content"] = structured_content
 
             return result
 
         except Exception as exc:
-            logger.exception("Error executing MCP tool %s",tool_name,)
-
+            logger.exception("Error executing MCP tool %s", tool_name)
             return {
+                "content": [f"Error executing {tool_name}: {exc}"],
                 "error": f"Error executing {tool_name}: {exc}",
                 "is_error": True,
             }
-
 
     @staticmethod
     def _extract_text_tool_calls(content: str) -> list[_RescuedToolCall]:
@@ -739,7 +920,6 @@ class WaterpointsAgent:
         try:
             json.loads(text)
             candidates = [text]
-
         except json.JSONDecodeError:
             # Maybe several JSON objects separated by newlines or semicolons
             parts = [
@@ -753,7 +933,6 @@ class WaterpointsAgent:
         for candidate in candidates:
             try:
                 obj = json.loads(candidate)
-
             except json.JSONDecodeError:
                 return []
 
@@ -770,19 +949,18 @@ class WaterpointsAgent:
 
         return rescued
 
-
     @staticmethod
     def _build_call_key(tool_name: str, tool_arguments: dict[str, Any]) -> str:
-        """Identidad de una llamada: nombre + argumentos normalizados."""
+        """Identity of a call: name + normalized arguments."""
         return f"{tool_name}:" + json.dumps(
             tool_arguments,
             sort_keys=True,
             default=str,
         )
 
-
     @staticmethod
     def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+        """Return a Python dict only."""
         if isinstance(arguments, dict):
             return arguments
 
@@ -791,15 +969,12 @@ class WaterpointsAgent:
 
         try:
             parsed = json.loads(arguments)
-
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError(
                 f"Invalid JSON arguments received from the model: {arguments}"
             ) from exc
 
         if not isinstance(parsed, dict):
-            raise ValueError(
-                "Tool arguments must decode to a JSON object."
-            )
+            raise ValueError("Tool arguments must decode to a JSON object.")
 
         return parsed
