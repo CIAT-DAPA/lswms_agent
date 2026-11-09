@@ -70,6 +70,7 @@ async def chat(message, history):
         # mcp_url=WATERPOINTS_MCP_URL,
         model=WATERPOINTS_AGENT_MODEL,
         api_base=WATERPOINTS_AGENT_API_BASE,
+        request_timeout=600.0,
     )
     agent.memory = build_memory_from_history(history)
 
@@ -77,8 +78,7 @@ async def chat(message, history):
 
 
 app = gr.ChatInterface(
-    fn=chat,
-    title="Dadoo Agent - Waterpoint Assistant",
+    fn=chat, title="Dadoo Agent - Waterpoint Assistant",
     description="Your trusted assistant for accessing timely information on waterpoint status, pasture conditions, and climate risks across Ethiopia's pastoral landscapes."
 )
 
